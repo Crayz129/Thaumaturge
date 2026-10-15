@@ -26,12 +26,15 @@ import org.jspecify.annotations.Nullable;
 
 public final class JeiSearchIndex {
     private static boolean reported;
-    private static boolean linkageReported;
+    private static boolean incompatible;
     private static @Nullable Method createFromElement;
 
     private JeiSearchIndex() {}
 
     public static void reindex(IJeiRuntime runtime, IIngredientManager ingredients, Predicate<Object> matches) {
+        if (incompatible) {
+            return;
+        }
         IngredientFilter filter = filterOf(runtime);
         if (filter == null) {
             return;
@@ -56,6 +59,9 @@ public final class JeiSearchIndex {
         IIngredientHelper<V> helper = ingredients.getIngredientHelper(typed.getType());
         Object uid = helper.getUid(typed.getIngredient(), UidContext.Ingredient);
         IListElementInfo<V> info = createInfo(filter, ingredients, element);
+        if (info == null && incompatible) {
+            return;
+        }
         if (info == null) {
             Thaumaturge.LOGGER.error("Could not refresh the JEI search entry for {}; it keeps its old search name", helper.getErrorInfo(typed.getIngredient()));
             return;
@@ -71,15 +77,14 @@ public final class JeiSearchIndex {
 
     /**
      * Calls JEI's internal {@code ListElementInfo.createFromElement}. Its parameter list differs between JEI releases (newer ones take an extra
-     * {@code IIngredientFilterConfig}), so the method is looked up by name and every parameter is filled in by type from what the ingredient filter holds.
+     * {@code IIngredientFilterConfig}), so the method is looked up by name and each parameter is filled in by type: the element, the ingredient manager
+     * and the mod id helper directly, anything else from the fields the ingredient filter holds. When that is not possible the refresh is switched off
+     * after one warning and the old search names are kept.
      */
     @SuppressWarnings("unchecked")
     private static <V> @Nullable IListElementInfo<V> createInfo(IngredientFilter filter, IIngredientManager ingredients, IListElement<V> element) {
         try {
             Method method = createFromElement();
-            if (method == null) {
-                return null;
-            }
             Class<?>[] types = method.getParameterTypes();
             Object[] args = new Object[types.length];
             for (int i = 0; i < types.length; i++) {
@@ -95,21 +100,22 @@ public final class JeiSearchIndex {
             }
             return (IListElementInfo<V>) method.invoke(null, args);
         } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-            if (!linkageReported) {
-                linkageReported = true;
-                Thaumaturge.LOGGER.warn("This JEI version is incompatible with Thaumaturge's search index refresh; aspect names will keep their old search names in JEI after discovery.", e);
-            }
+            incompatible = true;
+            Thaumaturge.LOGGER.warn("This JEI version is incompatible with Thaumaturge's search index refresh; aspect names will keep their old search names in JEI after discovery.", e);
             return null;
         }
     }
 
-    private static @Nullable Method createFromElement() {
+    private static Method createFromElement() throws NoSuchMethodException {
         if (createFromElement == null) {
             for (Method m : ListElementInfo.class.getMethods()) {
                 if (m.getName().equals("createFromElement") && Modifier.isStatic(m.getModifiers())) {
                     createFromElement = m;
                     break;
                 }
+            }
+            if (createFromElement == null) {
+                throw new NoSuchMethodException("ListElementInfo.createFromElement");
             }
         }
         return createFromElement;
